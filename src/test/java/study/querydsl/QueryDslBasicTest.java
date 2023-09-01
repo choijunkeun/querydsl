@@ -3,8 +3,13 @@ package study.querydsl;
 
 import com.querydsl.core.QueryResults;
 import com.querydsl.core.Tuple;
+import com.querydsl.core.types.dsl.CaseBuilder;
+import com.querydsl.core.types.dsl.Expressions;
+import com.querydsl.jpa.JPAExpressions;
 import com.querydsl.jpa.impl.JPAQueryFactory;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityManagerFactory;
+import jakarta.persistence.PersistenceUnit;
 import org.aspectj.lang.annotation.Before;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +24,7 @@ import study.querydsl.entity.Team;
 
 import java.util.List;
 
+import static com.querydsl.jpa.JPAExpressions.select;
 import static org.assertj.core.api.Assertions.assertThat;
 import static study.querydsl.entity.QMember.member;
 import static study.querydsl.entity.QTeam.team;
@@ -282,5 +288,264 @@ public class QueryDslBasicTest {
                 .extracting("username")
                 .containsExactly("teamA", "teamB");
     }
+
+    /**
+     * on 절 예제..
+     * 회원과 팀을 조인하면서, 팀 이름이 TEAmA인 팀만 조인, 회원은 모두 조회
+     * JPQL : select m , t from Member m left join m.team t on t.name = 'teamA'
+     * */
+    @Test
+    public void join_on_filtering() {
+        List<Tuple> result = queryFactory
+                .select(member, team)
+                .from(member)
+                .leftJoin(member.team, team)
+                .on(team.name.eq("teamA"))
+                .fetch();
+
+        /*
+        List<Tuple> result = queryFactory
+                .select(member, team)
+                .from(member)
+                .Join(member.team, team)
+                .where(team.name.eq("teamA") // inner join이면 on 대신 where 절로 사용. 결과 같음
+                .fetch();
+         */
+
+        for (Tuple tuple : result) {
+            System.out.println("tuple = " + tuple);
+        }
+    }
+
+    /**
+     * 연관관계가 없는 엔티티 외부조인
+     * 회원의 이름이 팀 이름과 같은 대상 외부 조인
+     * */
+    @Test
+    public void join_on_no_relation() {
+        em.persist(new Member("teamA"));
+        em.persist(new Member("teamB"));
+        em.persist(new Member("teamC"));
+
+        List<Tuple> result = queryFactory
+                .select(member, team)
+                .from(member)
+                .leftJoin(team).on(member.username.eq(team.name))
+                .fetch();
+        for (Tuple tuple : result) {
+            System.out.println("tuple = " + tuple);
+        }
+
+        /**
+         * 서로 관계없는 필드로 외부 조인 할 경우,
+         * 일반조인 : from(member).leftJoin(member.team, team)
+         * on 조인 : from(member).leftJoin(team).on(xxx)
+         * */
+    }
+
+
+    @PersistenceUnit
+    EntityManagerFactory emf;
+
+    @Test
+    public void fetchJoinNo() throws Exception {
+        em.flush();
+        em.clear();
+
+        Member findMember = queryFactory
+                .selectFrom(member)
+                .where(member.username.eq("member1"))
+                .fetchOne();
+
+        boolean loaded = emf.getPersistenceUnitUtil().isLoaded(findMember.getTeam());//초기화된지 안된애인지 확인해줌
+        assertThat(loaded).as("패치 조인 미적용").isFalse();
+    }
+
+    @Test
+    public void fetchJoinUse() throws Exception {
+        em.flush();
+        em.clear();
+
+        Member findMember = queryFactory
+                .selectFrom(member)
+                .join(member.team, team).fetchJoin()
+                .where(member.username.eq("member1"))
+                .fetchOne();
+
+        boolean loaded = emf.getPersistenceUnitUtil().isLoaded(findMember.getTeam());//초기화된지 안된애인지 확인해줌
+        assertThat(loaded).as("패치 조인 적용").isTrue();
+    }
+
+
+    /**
+     * 나이가 가장 많은 회원 조회 (서브쿼리 이용)
+     * */
+    @Test
+    public void subQuery() throws Exception {
+        // alias가 겹치면 안되므로 서브쿼리용 QMember를 만들어줌
+        QMember memberSub = new QMember("memberSub");
+
+        List<Member> result = queryFactory
+                .selectFrom(member)
+                .where(member.age.eq(
+                        select(memberSub.age.max())
+                                .from(memberSub)
+                ))
+                .fetch();
+
+        assertThat(result).extracting("age")
+                .containsExactly(40);
+    }
+
+    /**
+     * 나이가 평균 이상인 회원
+     * */
+    @Test
+    public void subQueryGoe() throws Exception {
+        // alias가 겹치면 안되므로 서브쿼리용 QMember를 만들어줌
+        QMember memberSub = new QMember("memberSub");
+
+        List<Member> result = queryFactory
+                .selectFrom(member)
+                .where(member.age.goe(
+                        select(memberSub.age.avg())
+                                .from(memberSub)
+                ))
+                .fetch();
+
+        assertThat(result).extracting("age")
+                .containsExactly(30,40);
+    }
+
+    /**
+     * 서브쿼리에서 in 적용
+     * */
+    @Test
+    public void subQueryIn() throws Exception {
+        // alias가 겹치면 안되므로 서브쿼리용 QMember를 만들어줌
+        QMember memberSub = new QMember("memberSub");
+
+        // 실습을 위해 작성한 쿼리지만 아래는 효율적이진 않은 쿼리이다.
+        List<Member> result = queryFactory
+                .selectFrom(member)
+                .where(member.age.in(
+                        select(memberSub.age)
+                                .from(memberSub)
+                                .where(memberSub.age.gt(10))    // 10살 초과
+                ))
+                .fetch();
+
+        assertThat(result).extracting("age")
+                .containsExactly(20,30,40);
+    }
+
+    /**
+     * select절에서 서브쿼리 사용
+     * */
+    @Test
+    public void selectSubQuery() {
+        QMember memberSub = new QMember("memberSub");
+
+        List<Tuple> result = queryFactory
+                .select(member.username,
+                        select(memberSub.age.avg())
+                                .from(memberSub))
+                .from(member)
+                .fetch();
+
+        for (Tuple tuple : result) {
+            System.out.println("tuple = " + tuple);
+        }
+
+        /**
+         * from절의 서브쿼리 한계
+         * JPA JPQL 서브쿼리의 한계는 from절에서 서브쿼리(인라인 뷰)를 지원하지 않는다. QueryDsl도 마찬가지.
+         * ######
+         * 하이버네이트6.1부터는 from절에서 서브쿼리를 지원한다. 그러나 공식적으로 지원해주지는 않고 있는것으로 보여
+         * 서드파티를 적용해야 할 것 같다.
+         * ######
+         *
+         * 해결방안.
+         * 1. 서브쿼리를 join으로 변경
+         * 2. 애플리케이션에서 쿼리를 2번 분리해서 실행
+         * 3. nativeSQL 사용
+         * */
+    }
+
+
+    /**
+     * case문
+     * (가급적 이런 문제는 DB에서 해결하지 말자)
+     * db는 row데이터를 필터링하고 그룹핑하거나 필요하면 계산할 수 있지만
+     * 최소한의 필터링과 그룹핑을 해서 데이터를 줄이는 일만 하고
+     * 10살이야 20살이야 보여주는건 DB에서 하지말고 그냥 가져와서 애플리케이션 또는 프레젠테이션 레이어에서 해야한다.
+     * */
+    @Test
+    public void basicCase() {
+        List<String> result = queryFactory
+                .select(member.age
+                        .when(10).then("열살")
+                        .when(20).then("스무살")
+                        .otherwise("기타"))
+                .from(member)
+                .fetch();
+
+        for (String s : result) {
+            System.out.println("s = " + s);
+        }
+    }
+    @Test
+    public void complexCase() {
+        List<String> result = queryFactory
+                .select(new CaseBuilder()
+                        .when(member.age.between(0, 20)).then("0~20살")
+                        .when(member.age.between(21, 30)).then("21살~30살")
+                        .otherwise("기타"))
+                .from(member)
+                .fetch();
+
+        for (String s : result) {
+            System.out.println("s = " + s);
+        }
+    }
+
+    /**
+     * 상수 더하기
+     * */
+    @Test
+    public void constant() {
+        List<Tuple> result = queryFactory
+                .select(member.username, Expressions.constant("A"))
+                .from(member)
+                .fetch();
+
+        for (Tuple tuple : result) {
+            System.out.println("tuple = " + tuple);
+        }
+    }
+
+    /**
+     * 문자 더하기
+     * */
+    @Test
+    public void concat() {
+
+        // {username}_{age}
+        // 타입이 다르기 떄문에 stringValue로 문자열로 바꿔준다.
+        // .stringValue() 생각보다 쓸일이 많다 -> Enum타입일 때 Enum이라 값이 안나오는데 그럴 때 사용
+        List<String> result = queryFactory
+                .select(member.username.concat("_").concat(member.age.stringValue()))
+                .from(member)
+                .where(member.username.eq("member1"))
+                .fetch();
+
+        for (String s : result) {
+            System.out.println("s = " + s);
+        }
+    }
+
+
+
+
 
 }

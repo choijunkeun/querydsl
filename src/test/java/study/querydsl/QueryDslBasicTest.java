@@ -835,10 +835,8 @@ public class QueryDslBasicTest {
                 .where(member.username.eq(member.username.lower())) // 위와 동일함(db 기본 ANCI표준에 있는 함수들은 거의 다 내장되어있음)
                 .fetch();
 
-        for (String s : result) {
+        for (String s : result)
             System.out.println("s = " + s);
-        }
     }
-
 
 }
